@@ -4,10 +4,11 @@ import numba
 import numpy as np
 import pandas as pd
 import random
+import sys
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def fetch_pair(emx, i, j, min_expression, max_expression):
     # extract pairwise data
     x = emx[i]
@@ -27,7 +28,7 @@ def fetch_pair(emx, i, j, min_expression, max_expression):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def mark_outliers(x, y, labels, k, marker):
     # extract samples in cluster k
     mask = (labels == k)
@@ -66,21 +67,9 @@ def mark_outliers(x, y, labels, k, marker):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def vector_diff_norm(a, b):
     return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
-
-
-
-# @numba.jit(nopython=True)
-def matrix_inverse(A, B):
-    det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
-    print(det)
-    B[0, 0] = +A[1, 1] / det
-    B[0, 1] = -A[0, 1] / det
-    B[1, 0] = -A[1, 0] / det
-    B[1, 1] = +A[0, 0] / det
-    return det
 
 
 
@@ -102,7 +91,7 @@ GMM = namedtuple('GMM', [
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def gmm_initialize_components(gmm, X, N, K):
     # initialize random state
     random.seed(1)
@@ -122,21 +111,28 @@ def gmm_initialize_components(gmm, X, N, K):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def gmm_prepare_components(gmm, K):
     D = 2
 
     for k in range(K):
-        print(gmm.sigma[k])
-
         # compute precision matrix (inverse of covariance matrix)
-        det = matrix_inverse(gmm.sigma[k], gmm.sigmaInv[k])
+        # det = matrix_inverse(gmm.sigma[k], gmm.sigmaInv[k])
+        A = gmm.sigma[k]
+        B = gmm.sigmaInv[k]
 
-        print(gmm.sigmaInv[k])
+        # compute determinant of covariance matrix
+        det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
 
         # return failure if matrix inverse failed
-        if det < 0.0 or np.isnan(det):
+        if det <= 0.0 or np.isnan(det):
             return False
+
+        # compute precision matrix
+        B[0, 0] = +A[1, 1] / det
+        B[0, 1] = -A[0, 1] / det
+        B[1, 0] = -A[1, 0] / det
+        B[1, 1] = +A[0, 0] / det
 
         # compute normalizer term for multivariate normal distribution
         gmm.normalizer[k] = -0.5 * (D * math.log(2.0 * math.pi) + math.log(det))
@@ -145,7 +141,7 @@ def gmm_prepare_components(gmm, K):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def gmm_initialize_means(gmm, X, N, K):
     max_iterations = 20
     tolerance = 1e-3
@@ -195,7 +191,7 @@ def gmm_initialize_means(gmm, X, N, K):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def gmm_compute_estep(gmm, X, N, K):
     # compute logpi
     for k in range(K):
@@ -249,7 +245,7 @@ def gmm_compute_estep(gmm, X, N, K):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def gmm_compute_mstep(gmm, X, N, K):
     for k in range(K):
         # compute n_k = sum(gamma_ik)
@@ -287,7 +283,7 @@ def gmm_compute_mstep(gmm, X, N, K):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def gmm_compute_labels(gamma, N, K, labels):
     for i in range(N):
         # determine the value k for which gamma_ik is highest
@@ -304,7 +300,7 @@ def gmm_compute_labels(gamma, N, K, labels):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def gmm_compute_entropy(gamma, N, labels):
     E = 0.0
     
@@ -316,7 +312,7 @@ def gmm_compute_entropy(gamma, N, labels):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def gmm_fit(gmm, X, N, K, labels):
     # initialize mixture components
     gmm_initialize_components(gmm, X, N, K)
@@ -335,7 +331,7 @@ def gmm_fit(gmm, X, N, K, labels):
         success = gmm_prepare_components(gmm, K)
 
         # return failure if matrix inverse failed
-        if ~success:
+        if not success:
             return False
 
         # perform E step
@@ -358,7 +354,7 @@ def gmm_fit(gmm, X, N, K, labels):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def compute_aic(K, D, logL):
     p = K * (1 + D + D * D)
     
@@ -366,7 +362,7 @@ def compute_aic(K, D, logL):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def compute_bic(K, D, logL, N):
     p = K * (1 + D + D * D)
     
@@ -374,7 +370,7 @@ def compute_bic(K, D, logL, N):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def compute_icl(K, D, logL, N, E):
     p = K * (1 + D + D * D)
 
@@ -382,7 +378,7 @@ def compute_icl(K, D, logL, N, E):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def gmm_compute(x, y, labels, min_samples, min_clusters, max_clusters, criterion):
     # extract pairwise data
     mask = (labels == 0)
@@ -418,17 +414,9 @@ def gmm_compute(x, y, labels, min_samples, min_clusters, max_clusters, criterion
 
         for K in range(min_clusters, max_clusters + 1):
             # run the clustering model
-            try:
-                success = gmm_fit(gmm, gmm.data, N, K, gmm.labels)
-            except ZeroDivisionError as e:
-                print(e)
-                success = False
-            except Value as e:
-                print(e)
-                success = False
+            success = gmm_fit(gmm, gmm.data, N, K, gmm.labels)
 
-            print(K, success)
-            if ~success:
+            if not success:
                 continue
 
             # compute the criterion value of the model
@@ -451,7 +439,7 @@ def gmm_compute(x, y, labels, min_samples, min_clusters, max_clusters, criterion
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def pearson(x, y):
     n = len(x)
     sumx = 0.0
@@ -474,7 +462,7 @@ def pearson(x, y):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def compute_rank(array):
     n = len(array)
     i = 0
@@ -511,7 +499,7 @@ def compute_rank(array):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def spearman(x, y):
     n = len(x)
     x_rank = np.copy(x)
@@ -531,7 +519,7 @@ def spearman(x, y):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def compute_correlation(x, y, labels, k, method, min_samples):
     # extract samples in cluster k
     x_k = x[labels == k]
@@ -551,7 +539,7 @@ def compute_correlation(x, y, labels, k, method, min_samples):
 
 
 
-# @numba.jit(nopython=True)
+@numba.jit(nopython=True)
 def similarity_cpu(
     emx,
     clusmethod,
@@ -673,4 +661,4 @@ def main(use_numba=False):
 
 
 if __name__ == '__main__':
-    main(use_numba=True)
+    main(use_numba=int(sys.argv[1]))
