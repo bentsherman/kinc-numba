@@ -557,7 +557,7 @@ def similarity_cpu(
 
     cmx = []
 
-    for i in range(10): # range(emx.shape[0]):
+    for i in range(emx.shape[0]):
         for j in range(i):
             # fetch pairwise input data
             x, y, labels = fetch_pair(emx, i, j, minexpr, maxexpr)
@@ -611,8 +611,8 @@ def similarity_cpu(
                     
 def main(use_numba=False):
     # define input parameters
-    args_input = 'Yeast-1000.emx.txt'
-    args_output = 'Yeast-1000.cmx.txt'
+    args_input = 'Yeast-100.emx.txt'
+    args_output = 'Yeast-100.cmx.txt'
     args_clusmethod = 'gmm'
     args_corrmethod = 'spearman'
     args_preout = True
