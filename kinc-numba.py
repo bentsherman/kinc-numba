@@ -615,15 +615,15 @@ def main(use_numba=False):
     args_output = 'Yeast-1000.cmx.txt'
     args_clusmethod = 'gmm'
     args_corrmethod = 'spearman'
-    args_preout = False
-    args_postout = False
+    args_preout = True
+    args_postout = True
     args_minexpr = 0.0
     args_maxexpr = 20.0
     args_minsamp = 30
     args_minclus = 1
     args_maxclus = 5
-    args_criterion = 'bic'
-    args_mincorr = 0.0
+    args_criterion = 'icl'
+    args_mincorr = 0.5
     args_maxcorr = 1.0
 
     # load input data
