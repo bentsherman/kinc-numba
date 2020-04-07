@@ -38,20 +38,40 @@ def fetch_pair(x, y, min_expression, max_expression, labels):
 
 
 
+@cuda.jit(device=True)
+def next_power_2(n):
+    pow2 = 2
+    while pow2 < n:
+        pow2 *= 2
+    return pow2
+
+
+
 @numba.jit(nopython=True)
-def mark_outliers(x, y, labels, k, marker):
+def mark_outliers(x, y, labels, k, marker, x_sorted, y_sorted):
     # extract samples in cluster k
-    mask = (labels == k)
-    x_sorted = np.copy(x[mask])
-    y_sorted = np.copy(y[mask])
+    n = 0
+    
+    for i in range(len(x)):
+        if labels[i] == k:
+            x_sorted[n] = x[i]
+            y_sorted[n] = y[i]
+            n += 1
+
+    # get power of 2 size
+    N_pow2 = next_power_2(len(x))
+    
+    for i in range(n, N_pow2):
+        x_sorted[i] = math.inf
+        y_sorted[i] = math.inf
 
     # make sure cluster is not empty
     if len(x_sorted) == 0 or len(y_sorted) == 0:
-        return
+        return 0
 
     # sort arrays
-    x_sorted.sort()
-    y_sorted.sort()
+#     x_sorted.sort()
+#     y_sorted.sort()
 
     # compute quartiles and thresholds for each axis
     n = len(x_sorted)
@@ -77,9 +97,99 @@ def mark_outliers(x, y, labels, k, marker):
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
+def vector_assign(a, b):
+    a[0] = b[0]
+    a[1] = b[1]
+
+
+
+@cuda.jit(device=True)
+def vector_add(a, b):
+    a[0] += b[0]
+    a[1] += b[1]
+
+
+
+@cuda.jit(device=True)
+def vector_add_scaled(a, c, b):
+    a[0] += c * b[0]
+    a[1] += c * b[1]
+
+
+
+@cuda.jit(device=True)
+def vector_subtract(a, b):
+    a[0] -= b[0]
+    a[1] -= b[1]
+
+
+
+@cuda.jit(device=True)
+def vector_scale(a, c):
+    a[0] *= c
+    a[1] *= c
+
+
+
+@cuda.jit(device=True)
+def vector_dot(a, b):
+    return a[0] * b[0] + a[1] * b[1]
+
+
+
+@cuda.jit(device=True)
 def vector_diff_norm(a, b):
     return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+
+
+
+@cuda.jit(device=True)
+def matrix_init_identity(M):
+    M[0, 0] = 1
+    M[0, 1] = 0
+    M[1, 0] = 0
+    M[1, 1] = 1
+
+
+
+@cuda.jit(device=True)
+def matrix_scale(A, c):
+    A[0, 0] *= c
+    A[0, 1] *= c
+    A[1, 0] *= c
+    A[1, 1] *= c
+
+
+
+@cuda.jit(device=True)
+def matrix_determinant(A):
+    return A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+
+
+
+@cuda.jit(device=True)
+def matrix_inverse(A, B, det):
+    B[0, 0] = +A[1, 1] / det
+    B[0, 1] = -A[0, 1] / det
+    B[1, 0] = -A[1, 0] / det
+    B[1, 1] = +A[0, 0] / det
+
+
+
+@cuda.jit(device=True)
+def matrix_product(A, x, b):
+    b[0] = A[0, 0] * x[0] + A[0, 1] * x[1]
+    b[1] = A[1, 0] * x[0] + A[1, 1] * x[1]
+
+
+
+@cuda.jit(device=True)
+def matrix_add_outer_product(A, c, x):
+    A[0, 0] += c * x[0] * x[0]
+    A[0, 1] += c * x[0] * x[1]
+    A[1, 0] += c * x[1] * x[0]
+    A[1, 1] += c * x[1] * x[1]
 
 
 
@@ -94,6 +204,8 @@ GMM = namedtuple('GMM', [
     'MP',
     'counts',
     'logpi',
+    'xm',
+    'Sxm',
     'gamma',
     'logL',
     'entropy'
@@ -101,48 +213,47 @@ GMM = namedtuple('GMM', [
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
+def myrand(N, state):
+    state = state * 1103515245 + 12345
+    return ((state//65536) % 32768) % N, state
+
+
+
+@cuda.jit(device=True)
 def gmm_initialize_components(gmm, X, N, K):
     # initialize random state
-    random.seed(1)
+    state = 1
 
     # initialize each mixture component
     for k in range(K):
         # initialize mixture weight to uniform distribution
         gmm.pi[k] = 1.0 / K
-        
+
         # initialize mean to a random sample from X
-        i = random.randrange(N)
-        
-        gmm.mu[k] = X[i]
-        
+        i, state = myrand(N, state)
+
+        vector_assign(gmm.mu[k], X[i])
+
         # initialize covariance to identity matrix
-        gmm.sigma[k] = np.identity(2)
+        matrix_init_identity(gmm.sigma[k])
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
 def gmm_prepare_components(gmm, K):
     D = 2
 
     for k in range(K):
-        # compute precision matrix (inverse of covariance matrix)
-        # det = matrix_inverse(gmm.sigma[k], gmm.sigmaInv[k])
-        A = gmm.sigma[k]
-        B = gmm.sigmaInv[k]
-
         # compute determinant of covariance matrix
-        det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+        det = matrix_determinant(gmm.sigma[k])
 
         # return failure if matrix inverse failed
         if det <= 0.0 or math.isnan(det):
             return False
 
-        # compute precision matrix
-        B[0, 0] = +A[1, 1] / det
-        B[0, 1] = -A[0, 1] / det
-        B[1, 0] = -A[1, 0] / det
-        B[1, 1] = +A[0, 0] / det
+        # compute precision matrix (inverse of covariance matrix)
+        matrix_inverse(gmm.sigma[k], gmm.sigmaInv[k], det)
 
         # compute normalizer term for multivariate normal distribution
         gmm.normalizer[k] = -0.5 * (D * math.log(2.0 * math.pi) + math.log(det))
@@ -151,7 +262,7 @@ def gmm_prepare_components(gmm, K):
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
 def gmm_initialize_means(gmm, X, N, K):
     max_iterations = 20
     tolerance = 1e-3
@@ -176,12 +287,12 @@ def gmm_initialize_means(gmm, X, N, K):
                     min_k = k
 
             # update mean and sample count
-            MP[min_k] += X[i]
+            vector_add(MP[min_k], X[i])
             counts[min_k] += 1
 
         # scale each mean by its sample count
         for k in range(K):
-            MP[k] /= counts[k]
+            vector_scale(MP[k], 1.0 / counts[k])
 
         # compute the total change of all means
         diff = 0.0
@@ -193,7 +304,7 @@ def gmm_initialize_means(gmm, X, N, K):
     
         # update component means
         for k in range(K):
-            gmm.mu[k] = MP[k]
+            vector_assign(gmm.mu[k], MP[k])
         
         # stop if converged
         if diff < tolerance:
@@ -201,7 +312,7 @@ def gmm_initialize_means(gmm, X, N, K):
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
 def gmm_compute_estep(gmm, X, N, K):
     # compute logpi
     for k in range(K):
@@ -213,13 +324,14 @@ def gmm_compute_estep(gmm, X, N, K):
     for i in range(N):
         for k in range(K):
             # compute xm = (x - mu)
-            xm = X[i] - gmm.mu[k]
-            
+            vector_assign(gmm.xm, X[i])
+            vector_subtract(gmm.xm, gmm.mu[k])
+
             # compute Sxm = Sigma^-1 xm
-            Sxm = np.dot(gmm.sigmaInv[k], xm)
+            matrix_product(gmm.sigmaInv[k], gmm.xm, gmm.Sxm)
 
             # compute xmSxm = xm^T Sigma^-1 xm
-            xmSxm = np.dot(xm, Sxm)
+            xmSxm = vector_dot(gmm.xm, gmm.Sxm)
             
             # compute log(P) = normalizer - 0.5 * xm^T * Sigma^-1 * xm
             logProb[i, k] = gmm.normalizer[k] - 0.5 * xmSxm
@@ -255,7 +367,7 @@ def gmm_compute_estep(gmm, X, N, K):
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
 def gmm_compute_mstep(gmm, X, N, K):
     for k in range(K):
         # compute n_k = sum(gamma_ik)
@@ -268,32 +380,29 @@ def gmm_compute_mstep(gmm, X, N, K):
         gmm.pi[k] = n_k / N
 
         # update mean
-        mu = np.zeros((2,))
+        gmm.mu[k, :] = 0
 
         for i in range(N):
-            mu += gmm.gamma[i, k] * X[i]
+            vector_add_scaled(gmm.mu[k], gmm.gamma[i, k], X[i])
 
-        mu /= n_k
+        vector_scale(gmm.mu[k], 1.0 / n_k)
         
-        gmm.mu[k] = mu
-
         # update covariance matrix
-        sigma = np.zeros((2, 2))
+        gmm.sigma[k, :, :] = 0
         
         for i in range(N):
             # compute xm = (x_i - mu_k)
-            xm = X[i] - mu
+            vector_assign(gmm.xm, X[i])
+            vector_subtract(gmm.xm, gmm.mu[k])
 
             # compute Sigma_ki = gamma_ik * (x_i - mu_k) (x_i - mu_k)^T
-            sigma += gmm.gamma[i, k] * np.dot(xm.T, xm)
+            matrix_add_outer_product(gmm.sigma[k], gmm.gamma[i, k], gmm.xm)
 
-        sigma /= n_k
-
-        gmm.sigma[k] = sigma
+        matrix_scale(gmm.sigma[k], 1.0 / n_k)
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
 def gmm_compute_labels(gamma, N, K, labels):
     for i in range(N):
         # determine the value k for which gamma_ik is highest
@@ -310,7 +419,7 @@ def gmm_compute_labels(gamma, N, K, labels):
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
 def gmm_compute_entropy(gamma, N, labels):
     E = 0.0
     
@@ -322,8 +431,11 @@ def gmm_compute_entropy(gamma, N, labels):
 
 
 
-@numba.jit(nopython=True)
-def gmm_fit(gmm, X, N, K, labels):
+@cuda.jit(device=True)
+def gmm_fit(
+    gmm,
+    X, N, K,
+    labels):
     # initialize mixture components
     gmm_initialize_components(gmm, X, N, K)
 
@@ -364,7 +476,7 @@ def gmm_fit(gmm, X, N, K, labels):
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
 def compute_aic(K, D, logL):
     p = K * (1 + D + D * D)
     
@@ -372,59 +484,50 @@ def compute_aic(K, D, logL):
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
 def compute_bic(K, D, logL, N):
     p = K * (1 + D + D * D)
     
-    return math.log(N) * p - 2 * logL
+    return math.log(float(N)) * p - 2 * logL
 
 
 
-@numba.jit(nopython=True)
+@cuda.jit(device=True)
 def compute_icl(K, D, logL, N, E):
     p = K * (1 + D + D * D)
 
-    return math.log(N) * p - 2 * logL + 2 * E
+    return math.log(float(N)) * p - 2 * logL + 2 * E
 
 
 
-@numba.jit(nopython=True)
-def gmm_compute(x, y, labels, min_samples, min_clusters, max_clusters, criterion):
-    # extract pairwise data
-    mask = (labels == 0)
-    gmm_data = np.vstack((x, y)).T[mask]
-    gmm_labels = np.copy(labels[mask])
-
-    # initialize gmm
-    N = len(gmm_labels)
-    K = max_clusters
-
-    gmm = GMM(
-        data       = gmm_data,
-        labels     = gmm_labels,
-        pi         = np.empty((K,)),
-        mu         = np.empty((K, 2)),
-        sigma      = np.empty((K, 2, 2)),
-        sigmaInv   = np.empty((K, 2, 2)),
-        normalizer = np.empty((K,)),
-        MP         = np.empty((K, 2)),
-        counts     = np.empty((K,)),
-        logpi      = np.empty((K,)),
-        gamma      = np.empty((N, K)),
-        logL       = np.array([0.0]),
-        entropy    = np.array([0.0])
-    )
-
+@cuda.jit(device=True)
+def gmm_compute(
+    gmm,
+    x, y,
+    n_samples,
+    labels,
+    min_samples,
+    min_clusters,
+    max_clusters,
+    criterion):
     # perform clustering only if there are enough samples
     bestK = 0
 
-    if N >= min_samples:
+    if n_samples >= min_samples:
+        # extract clean samples from data array
+        j = 0
+        for i in range(len(x)):
+            if labels[i] >= 0:
+                gmm.data[j, 0] = x[i]
+                gmm.data[j, 1] = y[i]
+                j += 1
+
         # determine the number of clusters
         bestValue = math.inf
 
         for K in range(min_clusters, max_clusters + 1):
             # run the clustering model
-            success = gmm_fit(gmm, gmm.data, N, K, gmm.labels)
+            success = gmm_fit(gmm, gmm.data, n_samples, K, gmm.labels)
 
             if not success:
                 continue
@@ -435,17 +538,23 @@ def gmm_compute(x, y, labels, min_samples, min_clusters, max_clusters, criterion
             if criterion == CRITERION_AIC:
                 value = compute_aic(K, 2, gmm.logL[0])
             elif criterion == CRITERION_BIC:
-                value = compute_bic(K, 2, gmm.logL[0], N)
+                value = compute_bic(K, 2, gmm.logL[0], n_samples)
             elif criterion == CRITERION_ICL:
-                value = compute_icl(K, 2, gmm.logL[0], N, gmm.entropy[0])
+                value = compute_icl(K, 2, gmm.logL[0], n_samples, gmm.entropy[0])
 
             # save the model with the lowest criterion value
             if value < bestValue:
                 bestK = K
                 bestValue = value
-                labels[mask] = gmm.labels
+                
+                # save labels for clean samples
+                j = 0
+                for i in range(len(x)):
+                    if labels[i] >= 0:
+                        labels[i] = gmm.labels[j]
+                        j += 1
 
-    return bestK, labels
+    return bestK
 
 
 
@@ -475,15 +584,6 @@ def pearson(x, y, labels, k, min_samples):
         return (n*sumxy - sumx*sumy) / math.sqrt((n*sumx2 - sumx*sumx) * (n*sumy2 - sumy*sumy))
 
     return np.nan
-
-
-
-@cuda.jit(device=True)
-def next_power_2(n):
-    pow2 = 2
-    while pow2 < n:
-        pow2 *= 2
-    return pow2
 
 
 
@@ -614,7 +714,11 @@ def similarity_gpu(
     work_gmm_MP,
     work_gmm_counts,
     work_gmm_logpi,
+    work_gmm_xm,
+    work_gmm_Sxm,
     work_gmm_gamma,
+    work_gmm_logL,
+    work_gmm_entropy,
     out_K,
     out_labels,
     out_correlations):
@@ -631,6 +735,24 @@ def similarity_gpu(
     x_sorted = work_x[index_x]
     y_sorted = work_y[index_y]
 
+    gmm = GMM(
+        data       = work_gmm_data[i],
+        labels     = work_gmm_labels[i],
+        pi         = work_gmm_pi[i],
+        mu         = work_gmm_mu[i],
+        sigma      = work_gmm_sigma[i],
+        sigmaInv   = work_gmm_sigmaInv[i],
+        normalizer = work_gmm_normalizer[i],
+        MP         = work_gmm_MP[i],
+        counts     = work_gmm_counts[i],
+        logpi      = work_gmm_logpi[i],
+        xm         = work_gmm_xm[i],
+        Sxm        = work_gmm_Sxm[i],
+        gamma      = work_gmm_gamma[i],
+        logL       = work_gmm_logL[i],
+        entropy    = work_gmm_entropy[i]
+    )
+
     labels = out_labels[i]
     correlations = out_correlations[i]
 
@@ -642,19 +764,39 @@ def similarity_gpu(
         labels)
 
     # remove pre-clustering outliers
-#     if preout:
-#         mark_outliers(x, y, labels, 0, -7)
+    if preout:
+        mark_outliers(
+            x, y,
+            labels,
+            0,
+            -7,
+            x_sorted,
+            y_sorted)
 
     # perform clustering
     K = 1
 
-#     if clusmethod == CLUSMETHOD_GMM:
-#         K, labels = gmm_compute(x, y, labels, minsamp, minclus, maxclus, criterion)
+    if clusmethod == CLUSMETHOD_GMM:
+        K = gmm_compute(
+            gmm,
+            x, y,
+            n_samples,
+            labels,
+            minsamp,
+            minclus,
+            maxclus,
+            criterion)
 
     # remove post-clustering outliers
-#     if K > 1 and postout:
-#         for k in range(K):
-#             mark_outliers(x, y, labels, k, -8)
+    if K > 1 and postout:
+        for k in range(K):
+            mark_outliers(
+                x, y,
+                labels,
+                k,
+                -8,
+                x_sorted,
+                y_sorted)
 
     # perform correlation
     if corrmethod == CORRMETHOD_PEARSON:
@@ -708,24 +850,29 @@ def main():
     # allocate device buffers
     W = args_gsize
     N = len(emx.columns)
+    N_pow2 = next_power_2.py_func(N)
     K = args_maxclus
     
     in_emx               = cuda.to_device(emx.values)
     in_index_cpu         = cuda.pinned_array((W, 2), dtype=np.int)
     in_index_gpu         = cuda.device_array_like(in_index_cpu)
-    work_x               = cuda.device_array((W, N))
-    work_y               = cuda.device_array((W, N))
+    work_x               = cuda.device_array((W, N_pow2))
+    work_y               = cuda.device_array((W, N_pow2))
     work_gmm_data        = cuda.device_array((W, N, 2))
     work_gmm_labels      = cuda.device_array((W, N), dtype=np.int8)
     work_gmm_pi          = cuda.device_array((W, K))
     work_gmm_mu          = cuda.device_array((W, K, 2))
-    work_gmm_sigma       = cuda.device_array((W, K, 4))
-    work_gmm_sigmaInv    = cuda.device_array((W, K, 4))
+    work_gmm_sigma       = cuda.device_array((W, K, 2, 2))
+    work_gmm_sigmaInv    = cuda.device_array((W, K, 2, 2))
     work_gmm_normalizer  = cuda.device_array((W, K))
     work_gmm_MP          = cuda.device_array((W, K, 2))
     work_gmm_counts      = cuda.device_array((W, K), dtype=np.int)
     work_gmm_logpi       = cuda.device_array((W, K))
+    work_gmm_xm          = cuda.device_array((W, 2))
+    work_gmm_Sxm         = cuda.device_array((W, 2))
     work_gmm_gamma       = cuda.device_array((W, N, K))
+    work_gmm_logL        = cuda.device_array((W, 1))
+    work_gmm_entropy     = cuda.device_array((W, 1))
     out_K_cpu            = cuda.pinned_array((W,), dtype=np.int8)
     out_K_gpu            = cuda.device_array_like(out_K_cpu)
     out_labels_cpu       = cuda.pinned_array((W, N), dtype=np.int8)
@@ -741,6 +888,8 @@ def main():
     index_y = 0
 
     for i in range(0, n_total_pairs, args_gsize):
+        print("%8d %8d" % (i, n_total_pairs))
+
         # determine number of pairs
         n_pairs = min(args_gsize, n_total_pairs - i)
 
@@ -783,7 +932,11 @@ def main():
             work_gmm_MP,
             work_gmm_counts,
             work_gmm_logpi,
+            work_gmm_xm,
+            work_gmm_Sxm,
             work_gmm_gamma,
+            work_gmm_logL,
+            work_gmm_entropy,
             out_K_gpu,
             out_labels_gpu,
             out_correlations_gpu
