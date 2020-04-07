@@ -47,6 +47,57 @@ def next_power_2(n):
 
 
 
+@cuda.jit(device=True)
+def swap(array, i, j):
+    tmp = array[i]
+    array[i] = array[j]
+    array[j] = tmp
+
+
+
+@numba.jit(nopython=True)
+def bitonic_sort(array):
+    n = len(array)
+    bsize = n // 2
+
+    ob = 2
+    while ob <= n:
+        ib = ob
+        while ib >= 2:
+            t = ib // 2
+            for i in range(bsize):
+                dir_ = -((i//(ob//2)) & 0x1)
+                a = (i//t) * ib + (i%t)
+                b = a + t
+                if (not dir_ and (array[a] > array[b])) or (dir_ and (array[a] < array[b])):
+                    swap(array, a, b)
+            ib //= 2
+        ob *= 2
+
+
+
+@numba.jit(nopython=True)
+def bitonic_sort_ff(array, extra):
+    n = len(array)
+    bsize = n // 2
+
+    ob = 2
+    while ob <= n:
+        ib = ob
+        while ib >= 2:
+            t = ib // 2
+            for i in range(bsize):
+                dir_ = -((i//(ob//2)) & 0x1)
+                a = (i//t) * ib + (i%t)
+                b = a + t
+                if (not dir_ and (array[a] > array[b])) or (dir_ and (array[a] < array[b])):
+                    swap(array, a, b)
+                    swap(extra, a, b)
+            ib //= 2
+        ob *= 2
+
+
+
 @numba.jit(nopython=True)
 def mark_outliers(x, y, labels, k, marker, x_sorted, y_sorted):
     # extract samples in cluster k
@@ -58,24 +109,19 @@ def mark_outliers(x, y, labels, k, marker, x_sorted, y_sorted):
             y_sorted[n] = y[i]
             n += 1
 
-    # get power of 2 size
-    N_pow2 = next_power_2(len(x))
-    
-    for i in range(n, N_pow2):
+    for i in range(n, len(x_sorted)):
         x_sorted[i] = math.inf
         y_sorted[i] = math.inf
 
     # make sure cluster is not empty
-    if len(x_sorted) == 0 or len(y_sorted) == 0:
+    if n == 0:
         return 0
 
     # sort arrays
-#     x_sorted.sort()
-#     y_sorted.sort()
+    bitonic_sort(x_sorted)
+    bitonic_sort(y_sorted)
 
     # compute quartiles and thresholds for each axis
-    n = len(x_sorted)
-
     Q1_x = x_sorted[n * 1 // 4]
     Q3_x = x_sorted[n * 3 // 4]
     T_x_min = Q1_x - 1.5 * (Q3_x - Q1_x)
@@ -432,10 +478,7 @@ def gmm_compute_entropy(gamma, N, labels):
 
 
 @cuda.jit(device=True)
-def gmm_fit(
-    gmm,
-    X, N, K,
-    labels):
+def gmm_fit(gmm, X, N, K, labels):
     # initialize mixture components
     gmm_initialize_components(gmm, X, N, K)
 
@@ -636,20 +679,18 @@ def spearman(x, y, labels, k, min_samples, x_rank, y_rank):
             n += 1
 
     # get power of 2 size
-    N_pow2 = next_power_2(len(x))
-
-    for i in range(n, N_pow2):
+    for i in range(n, len(x_rank)):
         x_rank[i] = math.inf
         y_rank[i] = math.inf
 
     # compute correlation only if there are enough samples
     if n >= min_samples:
         # compute rank of x
-#         bitonicSortFF(N_pow2, x_rank, y_rank)
+        bitonic_sort_ff(x_rank, y_rank)
         compute_rank(x_rank)
 
         # compute rank of y
-#         bitonicSortFF(N_pow2, y_rank, x_rank)
+        bitonic_sort_ff(y_rank, x_rank)
         compute_rank(y_rank)
 
         # compute correlation of rank arrays

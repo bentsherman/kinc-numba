@@ -422,11 +422,11 @@ def gmm_compute(x, y, labels, min_samples, min_clusters, max_clusters, criterion
             # compute the criterion value of the model
             value = math.inf
 
-            if criterion == 'aic':
+            if criterion == CRITERION_AIC:
                 value = compute_aic(K, 2, gmm.logL[0])
-            elif criterion == 'bic':
+            elif criterion == CRITERION_BIC:
                 value = compute_bic(K, 2, gmm.logL[0], N)
-            elif criterion == 'icl':
+            elif criterion == CRITERION_ICL:
                 value = compute_icl(K, 2, gmm.logL[0], N, gmm.entropy[0])
 
             # save the model with the lowest criterion value
@@ -530,12 +530,24 @@ def compute_correlation(x, y, labels, k, method, min_samples):
         return np.nan
 
     # compute correlation
-    if method == 'pearson':
+    if method == CORRMETHOD_PEARSON:
         return pearson(x_k, y_k)
-    elif method == 'spearman':
+    elif method == CORRMETHOD_SPEARMAN:
         return spearman(x_k, y_k)
     else:
         return np.nan
+
+
+
+CLUSMETHOD_NONE = 1
+CLUSMETHOD_GMM = 2
+
+CRITERION_AIC = 1
+CRITERION_BIC = 2
+CRITERION_ICL = 3
+
+CORRMETHOD_PEARSON = 1
+CORRMETHOD_SPEARMAN = 2
 
 
 
@@ -569,7 +581,7 @@ def similarity_cpu(
             # perform clustering
             K = 1
 
-            if clusmethod == 'gmm':
+            if clusmethod == CLUSMETHOD_GMM:
                 K, labels = gmm_compute(x, y, labels, minsamp, minclus, maxclus, criterion)
 
             # remove post-clustering outliers
@@ -613,8 +625,8 @@ def main(use_numba=False):
     # define input parameters
     args_input = 'Yeast-100.emx.txt'
     args_output = 'Yeast-100.cmx.txt'
-    args_clusmethod = 'gmm'
-    args_corrmethod = 'spearman'
+    args_clusmethod = CLUSMETHOD_GMM
+    args_corrmethod = CORRMETHOD_SPEARMAN
     args_preout = True
     args_postout = True
     args_minexpr = 0.0
@@ -622,7 +634,7 @@ def main(use_numba=False):
     args_minsamp = 30
     args_minclus = 1
     args_maxclus = 5
-    args_criterion = 'icl'
+    args_criterion = CRITERION_ICL
     args_mincorr = 0.5
     args_maxcorr = 1.0
 
