@@ -38,7 +38,6 @@ def fetch_pair(x, y, min_expression, max_expression, labels):
 
 
 
-@numba.jit(nopython=True)
 def next_power_2(n):
     pow2 = 2
     while pow2 < n:
@@ -891,7 +890,7 @@ def main():
     # allocate device buffers
     W = args_gsize
     N = len(emx.columns)
-    N_pow2 = next_power_2.py_func(N)
+    N_pow2 = next_power_2(N)
     K = args_maxclus
     
     in_emx               = cuda.to_device(emx.values)
