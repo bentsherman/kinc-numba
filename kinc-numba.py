@@ -9,6 +9,18 @@ import sys
 
 
 
+CLUSMETHOD_NONE = 1
+CLUSMETHOD_GMM = 2
+
+CRITERION_AIC = 1
+CRITERION_BIC = 2
+CRITERION_ICL = 3
+
+CORRMETHOD_PEARSON = 1
+CORRMETHOD_SPEARMAN = 2
+
+
+
 @numba.jit(nopython=True)
 def fetch_pair(x, y, min_expression, max_expression, labels):
     # label the pairwise samples
@@ -140,6 +152,9 @@ def mark_outliers(x, y, labels, k, marker, x_sorted, y_sorted):
 
             if outlier_x or outlier_y:
                 labels[i] = marker
+
+    # return number of remaining samples
+    return n
 
 
 
@@ -717,18 +732,6 @@ def spearman(x, y, labels, k, min_samples, x_rank, y_rank):
 
 
 
-CLUSMETHOD_NONE = 1
-CLUSMETHOD_GMM = 2
-
-CRITERION_AIC = 1
-CRITERION_BIC = 2
-CRITERION_ICL = 3
-
-CORRMETHOD_PEARSON = 1
-CORRMETHOD_SPEARMAN = 2
-
-
-
 @numba.jit(nopython=True)
 def similarity_kernel(
     x, y,
@@ -757,7 +760,7 @@ def similarity_kernel(
 
     # remove pre-clustering outliers
     if preout:
-        mark_outliers(
+        n_samples = mark_outliers(
             x, y,
             labels,
             0,
@@ -782,7 +785,7 @@ def similarity_kernel(
     # remove post-clustering outliers
     if K > 1 and postout:
         for k in range(K):
-            mark_outliers(
+            n_samples = mark_outliers(
                 x, y,
                 labels,
                 k,
