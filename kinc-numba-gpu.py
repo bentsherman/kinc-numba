@@ -9,7 +9,7 @@ import sys
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def fetch_pair(x, y, min_expression, max_expression, labels):
     # label the pairwise samples
     N = 0
@@ -38,7 +38,7 @@ def fetch_pair(x, y, min_expression, max_expression, labels):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def next_power_2(n):
     pow2 = 2
     while pow2 < n:
@@ -47,7 +47,7 @@ def next_power_2(n):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def swap(array, i, j):
     tmp = array[i]
     array[i] = array[j]
@@ -143,54 +143,54 @@ def mark_outliers(x, y, labels, k, marker, x_sorted, y_sorted):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def vector_assign(a, b):
     a[0] = b[0]
     a[1] = b[1]
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def vector_add(a, b):
     a[0] += b[0]
     a[1] += b[1]
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def vector_add_scaled(a, c, b):
     a[0] += c * b[0]
     a[1] += c * b[1]
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def vector_subtract(a, b):
     a[0] -= b[0]
     a[1] -= b[1]
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def vector_scale(a, c):
     a[0] *= c
     a[1] *= c
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def vector_dot(a, b):
     return a[0] * b[0] + a[1] * b[1]
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def vector_diff_norm(a, b):
     return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def matrix_init_identity(M):
     M[0, 0] = 1
     M[0, 1] = 0
@@ -199,7 +199,7 @@ def matrix_init_identity(M):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def matrix_scale(A, c):
     A[0, 0] *= c
     A[0, 1] *= c
@@ -208,13 +208,13 @@ def matrix_scale(A, c):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def matrix_determinant(A):
     return A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def matrix_inverse(A, B, det):
     B[0, 0] = +A[1, 1] / det
     B[0, 1] = -A[0, 1] / det
@@ -223,14 +223,14 @@ def matrix_inverse(A, B, det):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def matrix_product(A, x, b):
     b[0] = A[0, 0] * x[0] + A[0, 1] * x[1]
     b[1] = A[1, 0] * x[0] + A[1, 1] * x[1]
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def matrix_add_outer_product(A, c, x):
     A[0, 0] += c * x[0] * x[0]
     A[0, 1] += c * x[0] * x[1]
@@ -259,14 +259,14 @@ GMM = namedtuple('GMM', [
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def myrand(N, state):
     state = state * 1103515245 + 12345
     return ((state//65536) % 32768) % N, state
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def gmm_initialize_components(gmm, X, N, K):
     # initialize random state
     state = 1
@@ -286,7 +286,7 @@ def gmm_initialize_components(gmm, X, N, K):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def gmm_prepare_components(gmm, K):
     D = 2
 
@@ -308,7 +308,7 @@ def gmm_prepare_components(gmm, K):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def gmm_initialize_means(gmm, X, N, K):
     max_iterations = 20
     tolerance = 1e-3
@@ -358,7 +358,7 @@ def gmm_initialize_means(gmm, X, N, K):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def gmm_compute_estep(gmm, X, N, K):
     # compute logpi
     for k in range(K):
@@ -413,7 +413,7 @@ def gmm_compute_estep(gmm, X, N, K):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def gmm_compute_mstep(gmm, X, N, K):
     for k in range(K):
         # compute n_k = sum(gamma_ik)
@@ -448,7 +448,7 @@ def gmm_compute_mstep(gmm, X, N, K):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def gmm_compute_labels(gamma, N, K, labels):
     for i in range(N):
         # determine the value k for which gamma_ik is highest
@@ -465,7 +465,7 @@ def gmm_compute_labels(gamma, N, K, labels):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def gmm_compute_entropy(gamma, N, labels):
     E = 0.0
     
@@ -477,7 +477,7 @@ def gmm_compute_entropy(gamma, N, labels):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def gmm_fit(gmm, X, N, K, labels):
     # initialize mixture components
     gmm_initialize_components(gmm, X, N, K)
@@ -519,7 +519,7 @@ def gmm_fit(gmm, X, N, K, labels):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def compute_aic(K, D, logL):
     p = K * (1 + D + D * D)
     
@@ -527,7 +527,7 @@ def compute_aic(K, D, logL):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def compute_bic(K, D, logL, N):
     p = K * (1 + D + D * D)
     
@@ -535,7 +535,7 @@ def compute_bic(K, D, logL, N):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def compute_icl(K, D, logL, N, E):
     p = K * (1 + D + D * D)
 
@@ -543,7 +543,7 @@ def compute_icl(K, D, logL, N, E):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def gmm_compute(
     gmm,
     x, y,
@@ -601,7 +601,7 @@ def gmm_compute(
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def pearson(x, y, labels, k, min_samples):
     n = 0
     sumx = 0.0
@@ -630,7 +630,7 @@ def pearson(x, y, labels, k, min_samples):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def compute_rank(array):
     n = len(array)
     i = 0
@@ -667,7 +667,7 @@ def compute_rank(array):
 
 
 
-@cuda.jit(device=True)
+@numba.jit(nopython=True)
 def spearman(x, y, labels, k, min_samples, x_rank, y_rank):
     # extract samples in pairwise cluster
     n = 0
