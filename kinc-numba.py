@@ -38,6 +38,7 @@ def fetch_pair(x, y, min_expression, max_expression, labels):
 
 
 
+@numba.jit(nopython=True)
 def next_power_2(n):
     pow2 = 2
     while pow2 < n:
@@ -337,7 +338,8 @@ def gmm_initialize_means(gmm, X, N, K):
 
         # scale each mean by its sample count
         for k in range(K):
-            vector_scale(MP[k], 1.0 / counts[k])
+            if counts[k] > 0:
+                vector_scale(MP[k], 1.0 / counts[k])
 
         # compute the total change of all means
         diff = 0.0
@@ -727,11 +729,9 @@ CORRMETHOD_SPEARMAN = 2
 
 
 
-@cuda.jit
-def similarity_gpu(
-    n_pairs,
-    in_emx,
-    in_index,
+@numba.jit(nopython=True)
+def similarity_kernel(
+    x, y,
     clusmethod,
     corrmethod,
     preout,
@@ -742,59 +742,11 @@ def similarity_gpu(
     minclus,
     maxclus,
     criterion,
-    work_x,
-    work_y,
-    work_gmm_data,
-    work_gmm_labels,
-    work_gmm_pi,
-    work_gmm_mu,
-    work_gmm_sigma,
-    work_gmm_sigmaInv,
-    work_gmm_normalizer,
-    work_gmm_MP,
-    work_gmm_counts,
-    work_gmm_logpi,
-    work_gmm_xm,
-    work_gmm_Sxm,
-    work_gmm_gamma,
-    work_gmm_logL,
-    work_gmm_entropy,
-    out_K,
-    out_labels,
-    out_correlations):
-    
-    i = cuda.grid(1)
-    
-    if i >= n_pairs:
-        return
-    
-    # initialize workspace variables
-    index_x, index_y = in_index[i]
-    x = in_emx[index_x]
-    y = in_emx[index_y]
-    x_sorted = work_x[index_x]
-    y_sorted = work_y[index_y]
-
-    gmm = GMM(
-        data       = work_gmm_data[i],
-        labels     = work_gmm_labels[i],
-        pi         = work_gmm_pi[i],
-        mu         = work_gmm_mu[i],
-        sigma      = work_gmm_sigma[i],
-        sigmaInv   = work_gmm_sigmaInv[i],
-        normalizer = work_gmm_normalizer[i],
-        MP         = work_gmm_MP[i],
-        counts     = work_gmm_counts[i],
-        logpi      = work_gmm_logpi[i],
-        xm         = work_gmm_xm[i],
-        Sxm        = work_gmm_Sxm[i],
-        gamma      = work_gmm_gamma[i],
-        logL       = work_gmm_logL[i],
-        entropy    = work_gmm_entropy[i]
-    )
-
-    labels = out_labels[i]
-    correlations = out_correlations[i]
+    x_sorted,
+    y_sorted,
+    gmm,
+    labels,
+    correlations):
 
     # fetch pairwise input data
     n_samples = fetch_pair(
@@ -858,42 +810,259 @@ def similarity_gpu(
                 y_sorted)
 
     # save number of clusters
-    out_K[i] = K
+    return K
+
+
+
+def write_pair(
+    i, j,
+    K,
+    labels,
+    correlations,
+    mincorr,
+    maxcorr,
+    outfile):
+
+    # determine number of valid correlations
+    valid = np.array([(~np.isnan(corr) and mincorr <= abs(corr) and abs(corr) <= maxcorr) for corr in correlations])
+    n_clusters = valid.sum()
+    cluster_idx = 1
+
+    # write each correlation to output file
+    for k in range(K):
+        corr = correlations[k]
+
+        # make sure correlation meets thresholds
+        if valid[k]:
+            # compute sample mask
+            y_k = np.copy(labels)
+            y_k[(y_k >= 0) & (y_k != k)] = 0
+            y_k[y_k == k] = 1
+            y_k[y_k < 0] *= -1
+
+            sample_mask = ''.join([str(y_i) for y_i in y_k])
+
+            # compute summary statistics
+            n_samples = (y_k == 1).sum()
+
+            # write correlation to output file
+            outfile.write('%d\t%d\t%d\t%d\t%d\t%0.8f\t%s\n' % (i, j, cluster_idx, n_clusters, n_samples, corr, sample_mask))
+
+            # increment cluster index
+            cluster_idx += 1
+
+
+
+def similarity_cpu(
+    emx,
+    clusmethod,
+    corrmethod,
+    preout,
+    postout,
+    minexpr,
+    maxexpr,
+    minsamp,
+    minclus,
+    maxclus,
+    criterion,
+    mincorr,
+    maxcorr,
+    outfile):
+
+    # initialize workspace
+    N = emx.shape[1]
+    N_pow2 = next_power_2(N)
+    K = maxclus
+
+    x_sorted = np.empty((N_pow2,))
+    y_sorted = np.empty((N_pow2,))
+
+    gmm = GMM(
+        data       = np.empty((N, 2)),
+        labels     = np.empty((N,), dtype=np.int8),
+        pi         = np.empty((K,)),
+        mu         = np.empty((K, 2)),
+        sigma      = np.empty((K, 2, 2)),
+        sigmaInv   = np.empty((K, 2, 2)),
+        normalizer = np.empty((K,)),
+        MP         = np.empty((K, 2)),
+        counts     = np.empty((K,), dtype=np.int),
+        logpi      = np.empty((K,)),
+        xm         = np.empty((2,)),
+        Sxm        = np.empty((2,)),
+        gamma      = np.empty((N, K)),
+        logL       = np.empty((1,)),
+        entropy    = np.empty((1,))
+    )
+
+    labels = np.empty((N,), dtype=np.int8)
+    correlations = np.empty((K,))
+
+    # process each gene pair
+    for i in range(emx.shape[0]):
+        print("%8d" % (i))
+
+        for j in range(i):
+            # extract pairwise data
+            x = emx[i]
+            y = emx[j]
+
+            # compute pairwise similarity
+            K = similarity_kernel(
+                x, y,
+                clusmethod,
+                corrmethod,
+                preout,
+                postout,
+                minexpr,
+                maxexpr,
+                minsamp,
+                minclus,
+                maxclus,
+                criterion,
+                x_sorted,
+                y_sorted,
+                gmm,
+                labels,
+                correlations)
+
+            # save pairwise results
+            write_pair(
+                i, j,
+                K,
+                labels,
+                correlations,
+                mincorr,
+                maxcorr,
+                outfile)
 
 
                     
-def main():
-    # define input parameters
-    args_input = 'Yeast-100.emx.txt'
-    args_output = 'Yeast-100.cmx.txt'
-    args_clusmethod = CLUSMETHOD_GMM
-    args_corrmethod = CORRMETHOD_SPEARMAN
-    args_preout = True
-    args_postout = True
-    args_minexpr = 0.0
-    args_maxexpr = 20.0
-    args_minsamp = 30
-    args_minclus = 1
-    args_maxclus = 5
-    args_criterion = CRITERION_ICL
-    args_mincorr = 0.5
-    args_maxcorr = 1.0
-    args_gsize = 4096
-    args_lsize = 32
+@cuda.jit
+def similarity_gpu_helper(
+    n_pairs,
+    in_emx,
+    in_index,
+    clusmethod,
+    corrmethod,
+    preout,
+    postout,
+    minexpr,
+    maxexpr,
+    minsamp,
+    minclus,
+    maxclus,
+    criterion,
+    work_x,
+    work_y,
+    work_gmm_data,
+    work_gmm_labels,
+    work_gmm_pi,
+    work_gmm_mu,
+    work_gmm_sigma,
+    work_gmm_sigmaInv,
+    work_gmm_normalizer,
+    work_gmm_MP,
+    work_gmm_counts,
+    work_gmm_logpi,
+    work_gmm_xm,
+    work_gmm_Sxm,
+    work_gmm_gamma,
+    work_gmm_logL,
+    work_gmm_entropy,
+    out_K,
+    out_labels,
+    out_correlations):
 
-    # load input data
-    emx = pd.read_csv(args_input, sep='\t', index_col=0)
+    # get global index
+    i = cuda.grid(1)
+    
+    if i >= n_pairs:
+        return
+    
+    # initialize workspace variables
+    index_x, index_y = in_index[i]
+    x = in_emx[index_x]
+    y = in_emx[index_y]
+    x_sorted = work_x[index_x]
+    y_sorted = work_y[index_y]
 
-    # initialize output file
-    output = open(args_output, 'w')
+    gmm = GMM(
+        data       = work_gmm_data[i],
+        labels     = work_gmm_labels[i],
+        pi         = work_gmm_pi[i],
+        mu         = work_gmm_mu[i],
+        sigma      = work_gmm_sigma[i],
+        sigmaInv   = work_gmm_sigmaInv[i],
+        normalizer = work_gmm_normalizer[i],
+        MP         = work_gmm_MP[i],
+        counts     = work_gmm_counts[i],
+        logpi      = work_gmm_logpi[i],
+        xm         = work_gmm_xm[i],
+        Sxm        = work_gmm_Sxm[i],
+        gamma      = work_gmm_gamma[i],
+        logL       = work_gmm_logL[i],
+        entropy    = work_gmm_entropy[i]
+    )
+
+    labels = out_labels[i]
+    correlations = out_correlations[i]
+
+    # save number of clusters
+    out_K[i] = similarity_kernel(
+        x, y,
+        clusmethod,
+        corrmethod,
+        preout,
+        postout,
+        minexpr,
+        maxexpr,
+        minsamp,
+        minclus,
+        maxclus,
+        criterion,
+        x_sorted,
+        y_sorted,
+        gmm,
+        labels,
+        correlations)
+
+
+
+def pairwise_increment(i, j):
+    j += 1
+    if i == j:
+        i += 1
+        j = 0
+    return i, j
+
+
+
+def similarity_gpu(
+    emx,
+    clusmethod,
+    corrmethod,
+    preout,
+    postout,
+    minexpr,
+    maxexpr,
+    minsamp,
+    minclus,
+    maxclus,
+    criterion,
+    mincorr,
+    maxcorr,
+    gsize,
+    lsize,
+    outfile):
 
     # allocate device buffers
-    W = args_gsize
-    N = len(emx.columns)
+    W = gsize
+    N = emx.shape[0]
     N_pow2 = next_power_2(N)
-    K = args_maxclus
-    
-    in_emx               = cuda.to_device(emx.values)
+    K = maxclus
+
+    in_emx               = cuda.to_device(emx)
     in_index_cpu         = cuda.pinned_array((W, 2), dtype=np.int)
     in_index_gpu         = cuda.device_array_like(in_index_cpu)
     work_x               = cuda.device_array((W, N_pow2))
@@ -921,45 +1090,44 @@ def main():
     out_correlations_gpu = cuda.device_array_like(out_correlations_cpu)
 
     # iterate through global work blocks
-    n_genes = len(emx.index)
+    n_genes = emx.shape[0]
     n_total_pairs = n_genes * (n_genes - 1) // 2
 
     index_x = 1
     index_y = 0
 
-    for i in range(0, n_total_pairs, args_gsize):
+    for i in range(0, n_total_pairs, gsize):
         print("%8d %8d" % (i, n_total_pairs))
 
         # determine number of pairs
-        n_pairs = min(args_gsize, n_total_pairs - i)
+        n_pairs = min(gsize, n_total_pairs - i)
 
         # initialize index array
-        for j in range(n_pairs):
-            in_index_cpu[j] = index_x, index_y
+        index_x_ = index_x
+        index_y_ = index_y
 
-            index_y += 1
-            if index_x == index_y:
-                index_x += 1
-                index_y = 0
+        for j in range(n_pairs):
+            in_index_cpu[j] = index_x_, index_y_
+            index_x_, index_y_ = pairwise_increment(index_x_, index_y_)
 
         # copy index array to device
         in_index_gpu.copy_to_device(in_index_cpu)
 
         # execute similarity kernel
-        similarity_gpu[args_gsize, args_lsize](
+        similarity_gpu_helper[gsize, lsize](
             n_pairs,
             in_emx,
             in_index_gpu,
-            args_clusmethod,
-            args_corrmethod,
-            args_preout,
-            args_postout,
-            args_minexpr,
-            args_maxexpr,
-            args_minsamp,
-            args_minclus,
-            args_maxclus,
-            args_criterion,
+            clusmethod,
+            corrmethod,
+            preout,
+            postout,
+            minexpr,
+            maxexpr,
+            minsamp,
+            minclus,
+            maxclus,
+            criterion,
             work_x,
             work_y,
             work_gmm_data,
@@ -989,39 +1157,98 @@ def main():
         out_correlations_gpu.copy_to_host(out_correlations_cpu)
 
         # save correlation matrix to output file
-        for i in range(args_gsize):
-            # extract pairwise output data
-            K = out_K_cpu[i]
-            labels = out_labels_cpu[i]
-            correlations = out_correlations_cpu[i, 0:K]
+        index_x_ = index_x
+        index_y_ = index_y
 
-            # determine number of valid correlations
-            valid = np.array([(~np.isnan(corr) and args_mincorr <= abs(corr) and abs(corr) <= args_maxcorr) for corr in correlations])
-            n_clusters = valid.sum()
-            cluster_idx = 1
+        for j in range(n_pairs):
+            # extract pairwise results
+            K = out_K_cpu[j]
+            labels = out_labels_cpu[j]
+            correlations = out_correlations_cpu[j, 0:K]
 
-            # write each correlation to output file
-            for k in range(K):
-                corr = correlations[k]
+            # save pairwise results
+            write_pair(
+                index_x_, index_y_,
+                K,
+                labels,
+                correlations,
+                mincorr,
+                maxcorr,
+                outfile)
 
-                # make sure correlation meets thresholds
-                if valid[k]:
-                    # compute sample mask
-                    y_k = np.copy(labels)
-                    y_k[(y_k >= 0) & (y_k != k)] = 0
-                    y_k[y_k == k] = 1
-                    y_k[y_k < 0] *= -1
+            # increment pairwise index
+            index_x_, index_y_ = pairwise_increment(index_x_, index_y_)
 
-                    sample_mask = ''.join([str(y_i) for y_i in y_k])
+        # update local pairwise index
+        index_x = index_x_
+        index_y = index_y_
 
-                    # compute summary statistics
-                    n_samples = (y_k == 1).sum()
 
-                    # write correlation to output file
-                    output.write('%d\t%d\t%d\t%d\t%d\t%0.8f\t%s\n' % (i, j, cluster_idx, n_clusters, n_samples, corr, sample_mask))
 
-                    # increment cluster index
-                    cluster_idx += 1
+def main():
+    # define input parameters
+    args_input = 'Yeast-100.emx.txt'
+    args_output = 'Yeast-100.cmx.txt'
+    args_gpu = True
+    args_clusmethod = CLUSMETHOD_GMM
+    args_corrmethod = CORRMETHOD_SPEARMAN
+    args_preout = True
+    args_postout = True
+    args_minexpr = 0.0
+    args_maxexpr = 20.0
+    args_minsamp = 30
+    args_minclus = 1
+    args_maxclus = 5
+    args_criterion = CRITERION_ICL
+    args_mincorr = 0.5
+    args_maxcorr = 1.0
+    args_gsize = 4096
+    args_lsize = 32
+
+    # load input data
+    emx = pd.read_csv(args_input, sep='\t', index_col=0)
+
+    # initialize output file
+    outfile = open(args_output, 'w')
+
+    # run similarity
+    if args_gpu:
+        similarity_gpu(
+            emx.values,
+            args_clusmethod,
+            args_corrmethod,
+            args_preout,
+            args_postout,
+            args_minexpr,
+            args_maxexpr,
+            args_minsamp,
+            args_minclus,
+            args_maxclus,
+            args_criterion,
+            args_mincorr,
+            args_maxcorr,
+            args_gsize,
+            args_lsize,
+            outfile
+        )
+
+    else:
+        similarity_cpu(
+            emx.values,
+            args_clusmethod,
+            args_corrmethod,
+            args_preout,
+            args_postout,
+            args_minexpr,
+            args_maxexpr,
+            args_minsamp,
+            args_minclus,
+            args_maxclus,
+            args_criterion,
+            args_mincorr,
+            args_maxcorr,
+            outfile
+        )
 
 
 
