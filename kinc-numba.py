@@ -145,6 +145,8 @@ def mark_outliers(x, y, labels, k, marker, x_sorted, y_sorted):
     T_y_max = Q3_y + 1.5 * (Q3_y - Q1_y)
 
     # mark outliers
+    n = 0
+
     for i in range(len(labels)):
         if labels[i] == k:
             outlier_x = (x[i] < T_x_min or T_x_max < x[i])
@@ -152,6 +154,8 @@ def mark_outliers(x, y, labels, k, marker, x_sorted, y_sorted):
 
             if outlier_x or outlier_y:
                 labels[i] = marker
+            elif labels[i] >= 0:
+                n += 1
 
     # return number of remaining samples
     return n
@@ -877,33 +881,33 @@ def similarity_cpu(
     N_pow2 = next_power_2(N)
     K = maxclus
 
-    x_sorted = np.empty((N_pow2,))
-    y_sorted = np.empty((N_pow2,))
+    x_sorted = np.empty((N_pow2,), dtype=np.float32)
+    y_sorted = np.empty((N_pow2,), dtype=np.float32)
 
     gmm = GMM(
-        data       = np.empty((N, 2)),
+        data       = np.empty((N, 2), dtype=np.float32),
         labels     = np.empty((N,), dtype=np.int8),
-        pi         = np.empty((K,)),
-        mu         = np.empty((K, 2)),
-        sigma      = np.empty((K, 2, 2)),
-        sigmaInv   = np.empty((K, 2, 2)),
-        normalizer = np.empty((K,)),
-        MP         = np.empty((K, 2)),
-        counts     = np.empty((K,), dtype=np.int),
-        logpi      = np.empty((K,)),
-        xm         = np.empty((2,)),
-        Sxm        = np.empty((2,)),
-        gamma      = np.empty((N, K)),
-        logL       = np.empty((1,)),
-        entropy    = np.empty((1,))
+        pi         = np.empty((K,), dtype=np.float32),
+        mu         = np.empty((K, 2), dtype=np.float32),
+        sigma      = np.empty((K, 2, 2), dtype=np.float32),
+        sigmaInv   = np.empty((K, 2, 2), dtype=np.float32),
+        normalizer = np.empty((K,), dtype=np.float32),
+        MP         = np.empty((K, 2), dtype=np.float32),
+        counts     = np.empty((K,), dtype=np.int32),
+        logpi      = np.empty((K,), dtype=np.float32),
+        xm         = np.empty((2,), dtype=np.float32),
+        Sxm        = np.empty((2,), dtype=np.float32),
+        gamma      = np.empty((N, K), dtype=np.float32),
+        logL       = np.empty((1,), dtype=np.float32),
+        entropy    = np.empty((1,), dtype=np.float32)
     )
 
     labels = np.empty((N,), dtype=np.int8)
-    correlations = np.empty((K,))
+    correlations = np.empty((K,), dtype=np.float32)
 
     # process each gene pair
     for i in range(emx.shape[0]):
-        print("%8d" % (i))
+        # print("%8d" % (i))
 
         for j in range(i):
             # extract pairwise data
@@ -1061,35 +1065,35 @@ def similarity_gpu(
 
     # allocate device buffers
     W = gsize
-    N = emx.shape[0]
+    N = emx.shape[1]
     N_pow2 = next_power_2(N)
     K = maxclus
 
     in_emx               = cuda.to_device(emx)
-    in_index_cpu         = cuda.pinned_array((W, 2), dtype=np.int)
+    in_index_cpu         = cuda.pinned_array((W, 2), dtype=np.int32)
     in_index_gpu         = cuda.device_array_like(in_index_cpu)
-    work_x               = cuda.device_array((W, N_pow2))
-    work_y               = cuda.device_array((W, N_pow2))
-    work_gmm_data        = cuda.device_array((W, N, 2))
+    work_x               = cuda.device_array((W, N_pow2), dtype=np.float32)
+    work_y               = cuda.device_array((W, N_pow2), dtype=np.float32)
+    work_gmm_data        = cuda.device_array((W, N, 2), dtype=np.float32)
     work_gmm_labels      = cuda.device_array((W, N), dtype=np.int8)
-    work_gmm_pi          = cuda.device_array((W, K))
-    work_gmm_mu          = cuda.device_array((W, K, 2))
-    work_gmm_sigma       = cuda.device_array((W, K, 2, 2))
-    work_gmm_sigmaInv    = cuda.device_array((W, K, 2, 2))
-    work_gmm_normalizer  = cuda.device_array((W, K))
-    work_gmm_MP          = cuda.device_array((W, K, 2))
-    work_gmm_counts      = cuda.device_array((W, K), dtype=np.int)
-    work_gmm_logpi       = cuda.device_array((W, K))
-    work_gmm_xm          = cuda.device_array((W, 2))
-    work_gmm_Sxm         = cuda.device_array((W, 2))
-    work_gmm_gamma       = cuda.device_array((W, N, K))
-    work_gmm_logL        = cuda.device_array((W, 1))
-    work_gmm_entropy     = cuda.device_array((W, 1))
+    work_gmm_pi          = cuda.device_array((W, K), dtype=np.float32)
+    work_gmm_mu          = cuda.device_array((W, K, 2), dtype=np.float32)
+    work_gmm_sigma       = cuda.device_array((W, K, 2, 2), dtype=np.float32)
+    work_gmm_sigmaInv    = cuda.device_array((W, K, 2, 2), dtype=np.float32)
+    work_gmm_normalizer  = cuda.device_array((W, K), dtype=np.float32)
+    work_gmm_MP          = cuda.device_array((W, K, 2), dtype=np.float32)
+    work_gmm_counts      = cuda.device_array((W, K), dtype=np.int32)
+    work_gmm_logpi       = cuda.device_array((W, K), dtype=np.float32)
+    work_gmm_xm          = cuda.device_array((W, 2), dtype=np.float32)
+    work_gmm_Sxm         = cuda.device_array((W, 2), dtype=np.float32)
+    work_gmm_gamma       = cuda.device_array((W, N, K), dtype=np.float32)
+    work_gmm_logL        = cuda.device_array((W, 1), dtype=np.float32)
+    work_gmm_entropy     = cuda.device_array((W, 1), dtype=np.float32)
     out_K_cpu            = cuda.pinned_array((W,), dtype=np.int8)
     out_K_gpu            = cuda.device_array_like(out_K_cpu)
     out_labels_cpu       = cuda.pinned_array((W, N), dtype=np.int8)
     out_labels_gpu       = cuda.device_array_like(out_labels_cpu)
-    out_correlations_cpu = cuda.pinned_array((W, K))
+    out_correlations_cpu = cuda.pinned_array((W, K), dtype=np.float32)
     out_correlations_gpu = cuda.device_array_like(out_correlations_cpu)
 
     # iterate through global work blocks
@@ -1100,7 +1104,7 @@ def similarity_gpu(
     index_y = 0
 
     for i in range(0, n_total_pairs, gsize):
-        print("%8d %8d" % (i, n_total_pairs))
+        # print("%8d %8d" % (i, n_total_pairs))
 
         # determine number of pairs
         n_pairs = min(gsize, n_total_pairs - i)
@@ -1117,7 +1121,7 @@ def similarity_gpu(
         in_index_gpu.copy_to_device(in_index_cpu)
 
         # execute similarity kernel
-        similarity_gpu_helper[gsize, lsize](
+        similarity_gpu_helper[gsize // lsize, lsize](
             n_pairs,
             in_emx,
             in_index_gpu,
@@ -1189,10 +1193,14 @@ def similarity_gpu(
 
 
 def main():
+    if len(sys.argv) != 4:
+        print("usage: ./kinc-numba.py <infile> <outfile> <gpu>")
+        sys.exit(-1)
+
     # define input parameters
-    args_input = 'Yeast-100.emx.txt'
-    args_output = 'Yeast-100.cmx.txt'
-    args_gpu = True
+    args_input = sys.argv[1]
+    args_output = sys.argv[2]
+    args_gpu = bool(int(sys.argv[3]))
     args_clusmethod = CLUSMETHOD_GMM
     args_corrmethod = CORRMETHOD_SPEARMAN
     args_preout = True
@@ -1210,6 +1218,7 @@ def main():
 
     # load input data
     emx = pd.read_csv(args_input, sep='\t', index_col=0)
+    emx_data = emx.values.astype(np.float32)
 
     # initialize output file
     outfile = open(args_output, 'w')
@@ -1217,7 +1226,7 @@ def main():
     # run similarity
     if args_gpu:
         similarity_gpu(
-            emx.values,
+            emx_data,
             args_clusmethod,
             args_corrmethod,
             args_preout,
@@ -1237,7 +1246,7 @@ def main():
 
     else:
         similarity_cpu(
-            emx.values,
+            emx_data,
             args_clusmethod,
             args_corrmethod,
             args_preout,
