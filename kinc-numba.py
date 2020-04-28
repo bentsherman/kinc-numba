@@ -573,6 +573,7 @@ def gmm_compute(
     min_clusters,
     max_clusters,
     criterion):
+
     # perform clustering only if there are enough samples
     bestK = 0
 
